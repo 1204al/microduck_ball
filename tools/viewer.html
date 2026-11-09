@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Model Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #f4f1ea; font: 13px system-ui, sans-serif; color: #222; }
+  #bar { position: fixed; left: 8px; top: 8px; right: 8px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
+  #bar input { flex: 1; min-width: 200px; padding: 4px 6px; }
+  #labels div { position: fixed; transform: translateX(-50%); font-size: 11px; background: rgba(255,255,255,.8); padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
+</style></head>
+<body>
+<!-- Dev tool, not part of the game. ?keys=duck:cream,duck:graphite,pc,monitor  &yaw=0.6 &pitch=0.15 &cols=4 &lo=1 -->
+<div id="bar"><input id="keys" placeholder="keys, comma separated (duck:cream, prop keys, or 'all')"><button id="go">Show</button></div>
+<div id="labels"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="../js/duck-model.js"></script>
+<script>window.MD = window.MD || {}; MD.Arena = { inside: () => false, groundAt: () => 0 };</script>
+<script src="../js/duck-anim.js"></script>
+<script src="../js/props.js"></script>
+<script>
+const Q = new URLSearchParams(location.search);
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding; renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xf4f1ea).convertSRGBToLinear();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7f70, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 5); scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff, 0.6); fill.position.set(-4, 2, -3); scene.add(fill);
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.05, 500);
+let root = null;
+function show(list) {
+  if (root) scene.remove(root);
+  root = new THREE.Group(); scene.add(root);
+  document.getElementById('labels').innerHTML = '';
+  const cols = +Q.get('cols') || Math.ceil(Math.sqrt(list.length * innerWidth / innerHeight));
+  const yaw = Q.has('yaw') ? +Q.get('yaw') : 0.55, cell = 1.25;
+  const items = [];
+  list.forEach((k, i) => {
+    let obj, name = k;
+    if (k.startsWith('duck:')) {
+      const d = MD.buildDuck(k.split(':')[1] || 'cream'); obj = d.root;
+      // Settle into the idle stance the game uses (bent knees), optionally with the beak open.
+      const f = { id: 0, state: ({ open: 'chase', curl: 'curl' })[k.split(':')[2]] || 'idle', stateT: 0, actionDur: 0, vx: 0, vz: 0, onGround: true, skatesT: 1, stunT: 0, blindT: 0, pumpT: 0, flashT: 0, fallDir: { x: 0, z: 0 } };
+      MD.initAnim(f); for (let n = 0; n < 90; n++) MD.animateDuck(d, f, 1 / 30, 0);
+      const blobs = []; obj.traverse(o => { if (o.material && o.material.isShaderMaterial) blobs.push(o); }); blobs.forEach(o => o.parent.remove(o));
+    } else {
+      const t = MD.Props.BY[k]; if (!t) return;
+      obj = new THREE.Mesh(Q.get('lo') ? t.geoLo : t.geo, t.glow ? MD.Props.material('glow') : MD.Props.material('base')); name = k + ' · ' + t.name;
+    }
+    const bb = new THREE.Box3().setFromObject(obj), sz = bb.getSize(new THREE.Vector3());
+    const s = 1 / Math.max(sz.x, sz.y, sz.z);
+    const g = new THREE.Group(); g.add(obj); obj.position.set(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
+    g.scale.setScalar(s); g.rotation.y = yaw;
+    const c = i % cols, r = Math.floor(i / cols);
+    g.position.set((c - (cols - 1) / 2) * cell, -r * cell, 0);
+    root.add(g); items.push({ g, name });
+  });
+  const rows = Math.ceil(items.length / cols);
+  const w = cols * cell, h = rows * cell, pitch = Q.has('pitch') ? +Q.get('pitch') : 0.18;
+  const dist = Math.max(w / camera.aspect, h) / (2 * Math.tan(camera.fov * Math.PI / 360)) * 1.08 + 1;
+  const cy = -(rows - 1) * cell / 2 + 0.45;
+  camera.position.set(0, cy + Math.sin(pitch) * dist, Math.cos(pitch) * dist); camera.lookAt(0, cy, 0);
+  renderer.render(scene, camera);
+  const L = document.getElementById('labels');
+  items.forEach(it => { const p = it.g.position.clone(); p.y -= 0.08; p.project(camera); const d = document.createElement('div'); d.textContent = it.name; d.style.left = ((p.x + 1) / 2 * innerWidth) + 'px'; d.style.top = ((1 - p.y) / 2 * innerHeight) + 'px'; L.appendChild(d); });
+}
+function parse(v) { return v === 'all' ? MD.Props.T.map(t => t.key) : v.split(',').map(s => s.trim()).filter(Boolean); }
+const keysEl = document.getElementById('keys');
+keysEl.value = Q.get('keys') || 'duck:graphite,duck:cream,duck:lavender';
+document.getElementById('go').onclick = () => show(parse(keysEl.value));
+keysEl.onkeydown = e => { if (e.key === 'Enter') show(parse(keysEl.value)); };
+show(parse(keysEl.value));
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); show(parse(keysEl.value)); });
+</script>
+</body></html>
